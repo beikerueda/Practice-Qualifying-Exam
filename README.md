@@ -1,4 +1,5 @@
 Practice Qualifying Exam – Interface de Treinamento para Qualificação
+https://practice-qualifying-exam-jmchc3ehlzk9rrelcckwrn.streamlit.app/
 📌 Visão Geral
 
 A competência técnica em normas é um pré-requisito essencial para os indivíduos envolvidos em atividades de qualificação e requalificação, assegurando o rigor necessário aos processos de certificação
