@@ -51,7 +51,9 @@ if "last_topic" not in st.session_state:
 
 if "score" not in st.session_state:
     st.session_state.score = 0
-
+    
+if "selected_topic" not in st.session_state:
+    st.session_state.selected_topic = None
 TOTAL_QUESTIONS = 12
 
 # =====================================================
@@ -294,4 +296,5 @@ with col_right:
         </iframe>
         """,
         unsafe_allow_html=True
+
     )
