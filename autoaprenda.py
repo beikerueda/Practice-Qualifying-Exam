@@ -281,7 +281,7 @@ with col_right:
 
     st.subheader("Document Viewer")
 
-    with open(selected_pdf, "rb") as f:
+with open(selected_pdf, "rb") as f:
     pdf_bytes = f.read()
 
     st.subheader("Document Viewer")
@@ -293,5 +293,6 @@ with col_right:
         file_name=selected_pdf,
         mime="application/pdf"
     )
+
 
 
