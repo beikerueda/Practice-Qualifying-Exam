@@ -281,20 +281,17 @@ with col_right:
 
     st.subheader("Document Viewer")
 
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
+    with open(selected_pdf, "rb") as f:
+    pdf_bytes = f.read()
 
-    base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+    st.subheader("Document Viewer")
+    st.pdf(pdf_bytes)
 
-    st.markdown(
-        f"""
-        <iframe 
-            src="data:application/pdf;base64,{base64_pdf}" 
-            width="100%" 
-            height="800px"
-            type="application/pdf">
-        </iframe>
-        """,
-        unsafe_allow_html=True
-
+    st.download_button(
+        label="Download PDF",
+        data=pdf_bytes,
+        file_name=selected_pdf,
+        mime="application/pdf"
     )
+
+
