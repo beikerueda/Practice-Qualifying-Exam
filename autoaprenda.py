@@ -281,23 +281,19 @@ with col_right:
 
     st.subheader("Document Viewer")
 
-    try:
-        with open(pdf_path, "rb") as f:
-            pdf_bytes = f.read()
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
 
-        import base64
-        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+    base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
 
-        pdf_display = f"""
-        <iframe
-            src="data:application/pdf;base64,{base64_pdf}"
-            width="100%"
-            height="800"
-            style="border: none;">
+    st.markdown(
+        f"""
+        <iframe 
+            src="data:application/pdf;base64,{base64_pdf}" 
+            width="100%" 
+            height="800px"
+            type="application/pdf">
         </iframe>
-        """
-
-        st.markdown(pdf_display, unsafe_allow_html=True)
-
-    except Exception as e:
-        st.error(f"Error loading PDF: {e}")
+        """,
+        unsafe_allow_html=True
+    )
