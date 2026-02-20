@@ -285,18 +285,19 @@ with col_right:
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
 
-        # Visualizador oficial do Streamlit (não é bloqueado)
-        st.pdf(pdf_bytes)
+        import base64
+        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
 
-        # Botão para download
-        st.download_button(
-            label="Download PDF",
-            data=pdf_bytes,
-            file_name=pdf_path,
-            mime="application/pdf"
-        )
+        pdf_display = f"""
+        <iframe
+            src="data:application/pdf;base64,{base64_pdf}"
+            width="100%"
+            height="800"
+            style="border: none;">
+        </iframe>
+        """
 
-    except FileNotFoundError:
-        st.error("PDF file not found.")
+        st.markdown(pdf_display, unsafe_allow_html=True)
+
     except Exception as e:
         st.error(f"Error loading PDF: {e}")
