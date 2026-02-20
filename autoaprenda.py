@@ -126,13 +126,6 @@ def render_pdf_viewer(path: str) -> None:
     with open(path, "rb") as pdf_file:
         pdf_bytes = pdf_file.read()
 
-    st.download_button(
-        "Download selected PDF",
-        data=pdf_bytes,
-        file_name=os.path.basename(path),
-        mime="application/pdf",
-    )
-
     # Streamlit 1.32+ has native PDF support and avoids Chrome blocking data-URI iframes.
     if hasattr(st, "pdf"):
         st.pdf(pdf_bytes)
@@ -146,7 +139,7 @@ def render_pdf_viewer(path: str) -> None:
             type="application/pdf"
             width="100%"
             height="800px">
-            <p>Your browser blocked the embedded PDF preview. Use the download button above.</p>
+            <p>Your browser blocked the embedded PDF preview in this mode.</p>
         </object>
         """,
         unsafe_allow_html=True,
