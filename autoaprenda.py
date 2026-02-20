@@ -285,20 +285,10 @@ with col_right:
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
 
-        import base64
-        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+        # Visualizador oficial do Streamlit (não é bloqueado)
+        st.pdf(pdf_bytes)
 
-        pdf_display = f"""
-        <iframe
-            src="data:application/pdf;base64,{base64_pdf}"
-            width="100%"
-            height="800"
-            style="border: none;">
-        </iframe>
-        """
-
-        st.markdown(pdf_display, unsafe_allow_html=True)
-
+        # Botão para download
         st.download_button(
             label="Download PDF",
             data=pdf_bytes,
