@@ -13,11 +13,16 @@ st.set_page_config(layout="wide")
 # LOAD LOCAL PDF FILES
 # =====================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STANDARDS_DIR = os.path.join(BASE_DIR, "standards")
 
-pdf_files = [f for f in os.listdir(BASE_DIR) if f.lower().endswith(".pdf")]
+if not os.path.isdir(STANDARDS_DIR):
+    st.error(f"Standards folder not found: {STANDARDS_DIR}")
+    st.stop()
+
+pdf_files = [f for f in os.listdir(STANDARDS_DIR) if f.lower().endswith(".pdf")]
 
 if not pdf_files:
-    st.error("No PDF files found in the application folder.")
+    st.error("No PDF files found in the standards folder.")
     st.stop()
 
 # =====================================================
@@ -293,3 +298,4 @@ else:
 with col_right:
     st.subheader("Document Viewer")
     render_pdf_viewer(pdf_path)
+
