@@ -1,6 +1,6 @@
 import base64
-import os
 import re
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -12,17 +12,24 @@ st.set_page_config(layout="wide")
 # =====================================================
 # LOAD LOCAL PDF FILES
 # =====================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STANDARDS_DIR = os.path.join(BASE_DIR, "standards")
+BASE_DIR = Path(__file__).resolve().parent
 
-if not os.path.isdir(STANDARDS_DIR):
-    st.error(f"Standards folder not found: {STANDARDS_DIR}")
+# Supports both local runs and cloud deployments where working directory can differ.
+standards_candidates = [
+    BASE_DIR / "standards",
+    Path.cwd() / "standards",
+]
+
+STANDARDS_DIR = next((path for path in standards_candidates if path.is_dir()), None)
+if STANDARDS_DIR is None:
+    checked = "\n- ".join(str(path) for path in standards_candidates)
+    st.error(f"Standards folder not found. Checked:\n- {checked}")
     st.stop()
 
-pdf_files = [f for f in os.listdir(STANDARDS_DIR) if f.lower().endswith(".pdf")]
+pdf_files = sorted([pdf.name for pdf in STANDARDS_DIR.glob("*.pdf") if pdf.is_file()])
 
 if not pdf_files:
-    st.error("No PDF files found in the standards folder.")
+    st.error(f"No PDF files found in: {STANDARDS_DIR}")
     st.stop()
 
 # =====================================================
@@ -32,7 +39,7 @@ st.title("Practice Qualifying Exam: Part 1 (Open Book)")
 st.subheader("Standard Qualification")
 
 selected_pdf = st.selectbox("Choose a qualification standard:", pdf_files)
-pdf_path = os.path.join(BASE_DIR, selected_pdf)
+pdf_path = STANDARDS_DIR / selected_pdf
 
 # =====================================================
 # SESSION STATE INITIALIZATION
@@ -107,8 +114,12 @@ def add_hover_translation(text: str) -> str:
 # =====================================================
 # EXTRACT TITLES
 # =====================================================
-def extract_titles_from_pdf(path: str) -> list[str]:
-    reader = PdfReader(path)
+def extract_titles_from_pdf(path: Path) -> list[str]:
+    if not path.exists():
+        st.error(f"Selected PDF not found: {path}")
+        st.stop()
+
+    reader = PdfReader(str(path))
     full_text = ""
 
     for page in reader.pages:
@@ -127,7 +138,11 @@ def extract_titles_from_pdf(path: str) -> list[str]:
     return list(dict.fromkeys(titles))
 
 
-def render_pdf_viewer(path: str) -> None:
+def render_pdf_viewer(path: Path) -> None:
+    if not path.exists():
+        st.error(f"Selected PDF not found: {path}")
+        st.stop()
+
     with open(path, "rb") as pdf_file:
         pdf_bytes = pdf_file.read()
 
