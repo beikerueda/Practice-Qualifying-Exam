@@ -67,6 +67,12 @@ if "last_prompt" not in st.session_state:
 if "last_llm_error" not in st.session_state:
     st.session_state.last_llm_error = ""
 
+if "last_pdf" not in st.session_state:
+    st.session_state.last_pdf = None
+
+if "rationales" not in st.session_state:
+    st.session_state.rationales = {}
+
 # =====================================================
 # TRANSLATION
 # =====================================================
@@ -122,6 +128,47 @@ def extract_titles_from_pdf(path):
     return list(dict.fromkeys(titles))
 
 # =====================================================
+# EXTRACT TOPIC SNIPPET
+# =====================================================
+def extract_topic_snippet(path, topic, max_chars=4000):
+    reader = PdfReader(path)
+    full_text = ""
+
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            full_text += text + "\n"
+
+    lines = [line.strip() for line in full_text.split("\n") if line.strip()]
+
+    if topic == "No structured titles found":
+        return full_text[:max_chars]
+
+    start_idx = None
+    end_idx = None
+
+    for i, line in enumerate(lines):
+        if line == topic:
+            start_idx = i + 1
+            break
+
+    if start_idx is None:
+        return full_text[:max_chars]
+
+    for j in range(start_idx, len(lines)):
+        if re.match(r"^\d+\.\s+[A-Za-z].*", lines[j]):
+            end_idx = j
+            break
+
+    snippet_lines = lines[start_idx:end_idx] if end_idx else lines[start_idx:]
+    snippet = "\n".join(snippet_lines).strip()
+
+    if not snippet:
+        return full_text[:max_chars]
+
+    return snippet[:max_chars]
+
+# =====================================================
 # LLM (OLLAMA) QUESTION GENERATION
 # =====================================================
 def build_question_prompt(snippet, topic, total_questions=TOTAL_QUESTIONS):
@@ -140,14 +187,32 @@ def build_question_prompt(snippet, topic, total_questions=TOTAL_QUESTIONS):
         '        "C": "string",\n'
         '        "D": "string"\n'
         "      },\n"
-        '      "answer": "A|B|C|D",\n'
-        '      "rationale": "string"\n'
+        '      "answer": "A|B|C|D"\n'
         "    }\n"
         "  ]\n"
         "}\n"
         f"Topic: {topic}\n"
         "Text snippet:\n"
         f"{snippet}\n"
+    )
+
+def build_rationale_prompt(snippet, topic, question, options, answer):
+    return (
+        "You are an exam tutor.\n"
+        "Explain why the correct answer is correct, based on the snippet.\n"
+        "Return ONLY valid JSON with this schema:\n"
+        '{ "rationale": "string" }\n'
+        f"Topic: {topic}\n"
+        "Text snippet:\n"
+        f"{snippet}\n"
+        "Question:\n"
+        f"{question}\n"
+        "Options:\n"
+        f"A. {options['A']}\n"
+        f"B. {options['B']}\n"
+        f"C. {options['C']}\n"
+        f"D. {options['D']}\n"
+        f"Correct answer: {answer}\n"
     )
 
 def _extract_json(text):
@@ -174,7 +239,7 @@ def generate_questions_with_ollama(snippet, topic):
         "stream": False
     }
 
-    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+    response = requests.post(OLLAMA_URL, json=payload, timeout=180)
     response.raise_for_status()
 
     data = response.json()
@@ -199,11 +264,31 @@ def generate_questions_with_ollama(snippet, topic):
                 "C": options.get("C", "").strip(),
                 "D": options.get("D", "").strip(),
             },
-            "answer": q.get("answer", "").strip().upper(),
-            "rationale": q.get("rationale", "").strip()
+            "answer": q.get("answer", "").strip().upper()
         })
 
     return normalized, prompt
+
+def generate_rationale_with_ollama(snippet, topic, question, options, answer):
+    prompt = build_rationale_prompt(snippet, topic, question, options, answer)
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False
+    }
+
+    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+    response.raise_for_status()
+
+    data = response.json()
+    raw_text = data.get("response", "")
+    parsed = _extract_json(raw_text)
+
+    if not parsed or "rationale" not in parsed:
+        raise ValueError("LLM did not return valid JSON with 'rationale'.")
+
+    return parsed["rationale"].strip(), prompt
 
 # =====================================================
 # LAYOUT
@@ -224,54 +309,40 @@ with col_left:
     selected_topic = st.selectbox("Choose a topic:", topics)
 
     # RESET IF TOPIC CHANGES
-    if selected_topic != st.session_state.last_topic:
+    if selected_topic != st.session_state.last_topic or pdf_path != st.session_state.last_pdf:
         st.session_state.current_question = 1
         st.session_state.exam_started = False
         st.session_state.exam_finished = False
         st.session_state.score = 0
+        st.session_state.questions = []
+        st.session_state.last_prompt = ""
+        st.session_state.last_llm_error = ""
+        st.session_state.rationales = {}
         st.session_state.last_topic = selected_topic
+        st.session_state.last_pdf = pdf_path
 
     st.divider()
-
-    # =====================================================
-    # LLM INPUT
-    # =====================================================
-    st.subheader("Generate Questions from Text")
-
-    snippet = st.text_area(
-        "Paste a text snippet (English) to generate 12 questions:",
-        height=200
-    )
-
-    if st.button("Generate Questions"):
-        if not snippet.strip():
-            st.warning("Please paste a text snippet before generating.")
-        else:
-            try:
-                questions, prompt = generate_questions_with_ollama(
-                    snippet=snippet,
-                    topic=selected_topic
-                )
-                st.session_state.questions = questions
-                st.session_state.last_prompt = prompt
-                st.session_state.last_llm_error = ""
-                st.success("Questions generated successfully.")
-            except Exception as e:
-                st.session_state.last_llm_error = str(e)
-                st.error(f"LLM error: {e}")
-
-    if st.session_state.last_prompt:
-        with st.expander("Show LLM Prompt"):
-            st.code(st.session_state.last_prompt, language="text")
-
-    if st.session_state.last_llm_error:
-        st.warning(st.session_state.last_llm_error)
 
     # =====================================================
     # START EXAM
     # =====================================================
     if not st.session_state.exam_started:
         if st.button("Start Exam"):
+            snippet = extract_topic_snippet(pdf_path, selected_topic)
+            try:
+                with st.spinner("Generating questions with local LLM..."):
+                    questions, prompt = generate_questions_with_ollama(
+                        snippet=snippet,
+                        topic=selected_topic
+                    )
+                st.session_state.questions = questions
+                st.session_state.last_prompt = prompt
+                st.session_state.last_llm_error = ""
+            except Exception as e:
+                st.session_state.last_llm_error = str(e)
+                st.error(f"LLM error: {e}")
+                st.stop()
+
             st.session_state.exam_started = True
             st.session_state.exam_finished = False
             st.session_state.current_question = 1
@@ -295,7 +366,10 @@ with col_left:
                 f"C. {current_q['options']['C']}",
                 f"D. {current_q['options']['D']}",
             ]
-            correct_answer = f"{current_q['answer']}. {current_q['options'][current_q['answer']]}"
+            answer_key = current_q["answer"]
+            if answer_key not in current_q["options"]:
+                answer_key = "A"
+            correct_answer = f"{answer_key}. {current_q['options'][answer_key]}"
         else:
             question_text = (
                 f"This is question {st.session_state.current_question} "
@@ -321,6 +395,30 @@ with col_left:
 
             if answer == correct_answer:
                 st.session_state.score += 1
+            else:
+                if st.session_state.questions:
+                    rationale_key = f"{selected_topic}:{q_index}"
+                    if rationale_key not in st.session_state.rationales:
+                        try:
+                            snippet = extract_topic_snippet(pdf_path, selected_topic)
+                            with st.spinner("Getting rationale for incorrect answer..."):
+                                rationale, prompt = generate_rationale_with_ollama(
+                                    snippet=snippet,
+                                    topic=selected_topic,
+                                    question=current_q["question"],
+                                    options=current_q["options"],
+                                    answer=current_q["answer"]
+                                )
+                            st.session_state.rationales[rationale_key] = rationale
+                            st.session_state.last_prompt = prompt
+                            st.session_state.last_llm_error = ""
+                        except Exception as e:
+                            st.session_state.last_llm_error = str(e)
+
+            if st.session_state.questions and answer != correct_answer:
+                rationale_key = f"{selected_topic}:{q_index}"
+                if rationale_key in st.session_state.rationales:
+                    st.info(st.session_state.rationales[rationale_key])
 
             if st.session_state.current_question < TOTAL_QUESTIONS:
                 st.session_state.current_question += 1
@@ -338,6 +436,16 @@ with col_left:
     st.progress(min(progress, 1.0))
 
     st.write(f"Current Question: {min(st.session_state.current_question, TOTAL_QUESTIONS)} of {TOTAL_QUESTIONS}")
+
+    # =====================================================
+    # LLM PROMPT (OPTIONAL)
+    # =====================================================
+    if st.session_state.last_prompt:
+        with st.expander("Show LLM Prompt"):
+            st.code(st.session_state.last_prompt, language="text")
+
+    if st.session_state.last_llm_error:
+        st.warning(st.session_state.last_llm_error)
 
     # =====================================================
 # FEEDBACK SECTION (BASED ON TOPIC)
