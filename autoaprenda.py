@@ -43,9 +43,9 @@ if "last_topic" not in st.session_state:
 if "score" not in st.session_state:
     st.session_state.score = 0
 
-TOTAL_QUESTIONS = 8
+TOTAL_QUESTIONS = 6
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3.2:1b"
+OLLAMA_MODEL = "novaforgeai/gemma2:2b-optimized"
 OLLAMA_NUM_PREDICT = 700
 OLLAMA_TEMPERATURE = 0.2
 
@@ -1124,3 +1124,4 @@ with col_right:
         unsafe_allow_html=True
     )
     st.markdown('</div>', unsafe_allow_html=True)
+
