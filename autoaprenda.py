@@ -1267,21 +1267,21 @@ with col_right:
     st.markdown('<div class="ibc-section">Reference Document Viewer</div>', unsafe_allow_html=True)
 
     pdf_bytes = read_pdf_bytes(pdf_path)
-
-    base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
-
-    st.markdown(
-        f"""
-        <div class="ibc-viewer">
-            <iframe 
-                src="data:application/pdf;base64,{base64_pdf}#zoom=page-width" 
-                width="100%" 
-                height="1100px"
-                type="application/pdf">
-            </iframe>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    if hasattr(st, "pdf"):
+        st.pdf(pdf_bytes, height=1100)
+    else:
+        base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+        st.markdown(
+            f"""
+            <div class="ibc-viewer">
+                <iframe 
+                    src="data:application/pdf;base64,{base64_pdf}#zoom=page-width" 
+                    width="100%" 
+                    height="1100px"
+                    type="application/pdf">
+                </iframe>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
     st.markdown('</div>', unsafe_allow_html=True)
-
