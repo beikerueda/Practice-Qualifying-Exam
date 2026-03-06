@@ -1273,14 +1273,25 @@ with col_right:
     st.markdown(
         f"""
         <div class="ibc-viewer">
-            <iframe 
-                src="data:application/pdf;base64,{base64_pdf}#zoom=page-width" 
-                width="100%" 
-                height="1100px"
-                type="application/pdf">
-            </iframe>
+            <object
+                data="data:application/pdf;base64,{base64_pdf}#zoom=page-width"
+                type="application/pdf"
+                width="100%"
+                height="1100px">
+                <p style="padding:14px; margin:0;">
+                    PDF preview blocked by browser policy.
+                    <a href="data:application/pdf;base64,{base64_pdf}" target="_blank">Open PDF in new tab</a>.
+                </p>
+            </object>
         </div>
         """,
         unsafe_allow_html=True
+    )
+    st.download_button(
+        "Download PDF",
+        data=pdf_bytes,
+        file_name=selected_pdf,
+        mime="application/pdf",
+        use_container_width=True
     )
     st.markdown('</div>', unsafe_allow_html=True)
