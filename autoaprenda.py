@@ -8,6 +8,8 @@ import os
 import json
 import requests
 from datetime import datetime
+import time
+import random
 
 st.set_page_config(layout="wide")
 
@@ -46,8 +48,11 @@ if "score" not in st.session_state:
 TOTAL_QUESTIONS = 6
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "novaforgeai/gemma2:2b-optimized"
-OLLAMA_NUM_PREDICT = 700
+OLLAMA_NUM_PREDICT = 320
 OLLAMA_TEMPERATURE = 0.2
+OLLAMA_CONNECT_TIMEOUT = 10
+OLLAMA_RETRIES = 2
+OLLAMA_BACKOFF_SECONDS = 2
 
 if "questions" not in st.session_state:
     st.session_state.questions = []
@@ -77,7 +82,7 @@ if "answer_history" not in st.session_state:
     st.session_state.answer_history = {}
 
 if "preprocess_mode" not in st.session_state:
-    st.session_state.preprocess_mode = True
+    st.session_state.preprocess_mode = False
 
 if "processed_snippet" not in st.session_state:
     st.session_state.processed_snippet = ""
@@ -153,7 +158,7 @@ def extract_titles_from_pdf(path):
 # =====================================================
 # EXTRACT TOPIC SNIPPET
 # =====================================================
-def extract_topic_snippet(path, topic, max_chars=1500):
+def extract_topic_snippet(path, topic, max_chars=1000):
     full_text = read_pdf_full_text(path)
 
     lines = [line.strip() for line in full_text.split("\n") if line.strip()]
@@ -314,6 +319,20 @@ def _safe_text(value):
         return ""
     return str(value).strip()
 
+def _shuffle_options_and_answer(options, answer):
+    letters = ["A", "B", "C", "D"]
+    pairs = [(key, _safe_text(options.get(key, ""))) for key in letters]
+    random.shuffle(pairs)
+
+    shuffled_options = {}
+    shuffled_answer = "A"
+    for new_key, (old_key, text) in zip(letters, pairs):
+        shuffled_options[new_key] = text
+        if old_key == answer:
+            shuffled_answer = new_key
+
+    return shuffled_options, shuffled_answer
+
 def _extract_questions_payload(raw_text):
     parsed = _extract_json(raw_text)
     if isinstance(parsed, dict):
@@ -328,6 +347,100 @@ def _extract_questions_payload(raw_text):
 
     return None
 
+def _extract_questions_from_plain_text(raw_text):
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    questions = []
+    current = None
+
+    q_pattern = re.compile(r"^(?:question\s*)?(\d+)[\).:\-]\s*(.+)$", re.IGNORECASE)
+    opt_pattern = re.compile(r"^([A-D])[\).:\-]\s*(.+)$", re.IGNORECASE)
+    ans_pattern = re.compile(r"^(?:answer|correct answer)\s*[:\-]\s*([A-D])", re.IGNORECASE)
+
+    for line in lines:
+        q_match = q_pattern.match(line)
+        if q_match:
+            if current:
+                questions.append(current)
+            current = {
+                "question": _safe_text(q_match.group(2)),
+                "options": {"A": "", "B": "", "C": "", "D": ""},
+                "answer": "A"
+            }
+            continue
+
+        if current is None:
+            continue
+
+        opt_match = opt_pattern.match(line)
+        if opt_match:
+            key = opt_match.group(1).upper()
+            current["options"][key] = _safe_text(opt_match.group(2))
+            continue
+
+        ans_match = ans_pattern.match(line)
+        if ans_match:
+            current["answer"] = ans_match.group(1).upper()
+
+    if current:
+        questions.append(current)
+
+    normalized = []
+    for q in questions:
+        if q["question"] and all(_safe_text(q["options"][k]) for k in ("A", "B", "C", "D")):
+            normalized.append(q)
+    return normalized
+
+def _build_fallback_questions(snippet, topic, needed):
+    words = re.findall(r"[A-Za-z]{5,}", snippet.lower())
+    keywords = []
+    for word in words:
+        if word not in excluded_words and word not in keywords:
+            keywords.append(word)
+        if len(keywords) >= needed:
+            break
+    if not keywords:
+        keywords = ["standard"] * needed
+
+    fallback = []
+    for i in range(needed):
+        keyword = keywords[i % len(keywords)].title()
+        base_options = {
+            "A": "It is a relevant technical concept discussed in the reference material.",
+            "B": "It is excluded from exam scope by default.",
+            "C": "It replaces all safety and procedure requirements.",
+            "D": "It is unrelated to qualification decisions."
+        }
+        shuffled_options, shuffled_answer = _shuffle_options_and_answer(base_options, "A")
+        fallback.append({
+            "question": f"In the topic '{topic}', what best describes '{keyword}'?",
+            "options": shuffled_options,
+            "answer": shuffled_answer
+        })
+    return fallback
+
+def _call_ollama(payload, read_timeout, retries=OLLAMA_RETRIES):
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            response = requests.post(
+                OLLAMA_URL,
+                json=payload,
+                timeout=(OLLAMA_CONNECT_TIMEOUT, read_timeout)
+            )
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(OLLAMA_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            break
+
+    raise RuntimeError(
+        f"Ollama request failed after {retries + 1} attempts. "
+        f"Last error: {last_error}"
+    )
+
 def preprocess_snippet_with_ollama(snippet, topic):
     prompt = build_preprocess_prompt(snippet, topic)
     payload = {
@@ -341,9 +454,7 @@ def preprocess_snippet_with_ollama(snippet, topic):
         "stream": False
     }
 
-    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
-    response.raise_for_status()
-    data = response.json()
+    data = _call_ollama(payload, read_timeout=240)
     raw_text = data.get("response", "")
     parsed = _extract_json(raw_text)
 
@@ -387,13 +498,13 @@ def generate_questions_with_ollama(snippet, topic):
         "stream": False
     }
 
-    response = requests.post(OLLAMA_URL, json=payload, timeout=180)
-    response.raise_for_status()
-
-    data = response.json()
+    data = _call_ollama(payload, read_timeout=420)
     raw_text = data.get("response", "")
 
     questions = _extract_questions_payload(raw_text)
+    if questions is None:
+        questions = _extract_questions_from_plain_text(raw_text)
+
     if questions is None:
         repair_prompt = (
             "Convert the following content into valid JSON with this schema only:\n"
@@ -412,20 +523,20 @@ def generate_questions_with_ollama(snippet, topic):
             },
             "stream": False
         }
-        repair_response = requests.post(OLLAMA_URL, json=repair_payload, timeout=120)
-        repair_response.raise_for_status()
-        repair_data = repair_response.json()
+        repair_data = _call_ollama(repair_payload, read_timeout=240)
         repaired_raw = repair_data.get("response", "")
         questions = _extract_questions_payload(repaired_raw)
+        if questions is None:
+            questions = _extract_questions_from_plain_text(repaired_raw)
 
     if questions is None:
-        raise ValueError("LLM did not return valid JSON with 'questions'.")
+        questions = []
 
-    if not isinstance(questions, list) or len(questions) < TOTAL_QUESTIONS:
-        raise ValueError(f"LLM returned fewer than {TOTAL_QUESTIONS} questions.")
+    if not isinstance(questions, list):
+        questions = []
 
     normalized = []
-    for q in questions[:TOTAL_QUESTIONS]:
+    for q in questions:
         if not isinstance(q, dict):
             continue
 
@@ -433,20 +544,31 @@ def generate_questions_with_ollama(snippet, topic):
         if not isinstance(options, dict):
             options = {}
 
+        normalized_options = {
+            "A": _safe_text(options.get("A", "")),
+            "B": _safe_text(options.get("B", "")),
+            "C": _safe_text(options.get("C", "")),
+            "D": _safe_text(options.get("D", "")),
+        }
+        for letter in ("A", "B", "C", "D"):
+            if not normalized_options[letter]:
+                normalized_options[letter] = f"Option {letter}"
+
         answer = _safe_text(q.get("answer", "")).upper()
         if answer not in {"A", "B", "C", "D"}:
-            answer = "A"
+            answer = random.choice(["A", "B", "C", "D"])
+
+        shuffled_options, shuffled_answer = _shuffle_options_and_answer(normalized_options, answer)
 
         normalized.append({
             "question": _safe_text(q.get("question", "")),
-            "options": {
-                "A": _safe_text(options.get("A", "")),
-                "B": _safe_text(options.get("B", "")),
-                "C": _safe_text(options.get("C", "")),
-                "D": _safe_text(options.get("D", "")),
-            },
-            "answer": answer
+            "options": shuffled_options,
+            "answer": shuffled_answer
         })
+
+    if len(normalized) < TOTAL_QUESTIONS:
+        needed = TOTAL_QUESTIONS - len(normalized)
+        normalized.extend(_build_fallback_questions(snippet, topic, needed))
 
     return normalized, prompt
 
@@ -464,10 +586,7 @@ def generate_rationale_with_ollama(snippet, topic, question, options, answer):
         "stream": False
     }
 
-    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
-    response.raise_for_status()
-
-    data = response.json()
+    data = _call_ollama(payload, read_timeout=180)
     raw_text = data.get("response", "")
     parsed = _extract_json(raw_text)
 
@@ -536,16 +655,18 @@ st.markdown(
 
     .ibc-title {
         margin: 0;
-        font-size: 1.5rem;
+        font-size: 4rem;
         font-weight: 700;
         letter-spacing: 0.02em;
+        line-height: 1.05;
     }
 
     .ibc-subtitle {
         margin: 3px 0 0 0;
-        font-size: 0.95rem;
+        font-size: 2.4rem;
         opacity: 0.92;
         font-weight: 500;
+        line-height: 1.1;
     }
 
     .ibc-panel {
@@ -713,6 +834,15 @@ st.markdown(
         border-radius: 10px;
         padding: 10px 12px;
         margin-top: 8px;
+    }
+
+    @media (max-width: 900px) {
+        .ibc-title {
+            font-size: 2.2rem;
+        }
+        .ibc-subtitle {
+            font-size: 1.2rem;
+        }
     }
     </style>
     """,
@@ -943,7 +1073,7 @@ with col_left:
     # =====================================================
     # PROGRESS
     # =====================================================
-    st.subheader("Learning Progress")
+    st.subheader("Progress")
 
     progress = st.session_state.current_question / TOTAL_QUESTIONS
     st.progress(min(progress, 1.0))
@@ -1114,9 +1244,9 @@ with col_right:
         f"""
         <div class="ibc-viewer">
             <iframe 
-                src="data:application/pdf;base64,{base64_pdf}" 
+                src="data:application/pdf;base64,{base64_pdf}#zoom=page-width" 
                 width="100%" 
-                height="820px"
+                height="1100px"
                 type="application/pdf">
             </iframe>
         </div>
@@ -1124,4 +1254,3 @@ with col_right:
         unsafe_allow_html=True
     )
     st.markdown('</div>', unsafe_allow_html=True)
-
