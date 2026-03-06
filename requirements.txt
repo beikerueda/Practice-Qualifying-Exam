@@ -3,3 +3,5 @@ deep-translator
 pypdf
 streamlit[pdf]>=1.30
 pandas
+openai
+
