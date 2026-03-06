@@ -93,13 +93,7 @@ Um badge visual grande exibe a porcentagem de acertos
 
 A nota é apresentada em formato percentual
 
-A cor indica o nível de desempenho:
-
-🟢 Verde → Alto desempenho
-
-🟡 Amarelo → Desempenho moderado
-
-🔴 Vermelho → Necessita melhoria
+O nível de desempenho:
 
 Essa apresentação visual facilita a interpretação do resultado.
 
@@ -147,6 +141,22 @@ Componente de visualização de PDF (streamlit[pdf])
 
 Gerenciamento de estado de sessão (Session State)
 
+pypdf (PdfReader): leitura e extração de texto dos PDFs.
+
+deep-translator (GoogleTranslator): tradução palavra a palavra no hover.
+
+requests: chamadas HTTP para endpoint LLM compatível com Ollama.
+
+openai: chamadas à API da OpenAI quando OPENAI_API_KEY está em st.secrets.
+
+base64: renderização/embedd de PDF e logo na UI.
+
+re, json, html: parsing, validação/extração de JSON e sanitização.
+
+datetime, time, random: metadados de prova, retry/backoff e randomização de alternativas.
+
+OLLAMA_URL = "http://localhost:11434/api/generate" (nas versões locais).
+
 🌐 Implantação (Deploy)
 
 A aplicação pode ser publicada em:
@@ -163,22 +173,16 @@ Cada usuário que acessa o link público possui uma sessão independente.
 
 🚀 Possíveis Melhorias Futuras
 
-Geração automática de perguntas a partir do conteúdo do PDF
-
-Destaque de trechos importantes do documento
-
 Sistema de autenticação de usuários
 
 Histórico de desempenho
 
-Geração automática de certificado após conclusão
-
 📚 Público-Alvo
 
-Ambientes corporativos de treinamento
+Ambientes corporativos de treinamento, e certificação da competencia tecnica.
 
 📎 Conclusão
 
-O AutoAprenda transforma padrões de qualificação estáticos em uma experiência interativa de aprendizado.
+A API transforma padrões de qualificação estáticos em uma experiência interativa de aprendizado.
 
 Ao integrar visualização de documentos, avaliação estruturada, acompanhamento de desempenho e feedback contextualizado, a aplicação contribui para uma aprendizagem mais eficiente e aprofundada de conteúdos técnicos.
