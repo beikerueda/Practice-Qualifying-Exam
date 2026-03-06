@@ -87,6 +87,9 @@ if "preprocess_mode" not in st.session_state:
 if "processed_snippet" not in st.session_state:
     st.session_state.processed_snippet = ""
 
+if "llm_enabled" not in st.session_state:
+    st.session_state.llm_enabled = False
+
 # =====================================================
 # CACHED PDF HELPERS
 # =====================================================
@@ -417,6 +420,13 @@ def _build_fallback_questions(snippet, topic, needed):
             "answer": shuffled_answer
         })
     return fallback
+
+def _build_local_rationale(correct_answer):
+    return (
+        "Local rationale mode: the best option is the one that aligns with the technical "
+        "content extracted from the selected topic.\n\n"
+        f"Expected correct option: {correct_answer}"
+    )
 
 def _call_ollama(payload, read_timeout, retries=OLLAMA_RETRIES):
     last_error = None
@@ -893,11 +903,18 @@ with col_left:
         "Candidate Name",
         value=st.session_state.candidate_name
     )
+    st.session_state.llm_enabled = st.toggle(
+        "Use LLM generation (requires configured endpoint)",
+        value=st.session_state.llm_enabled,
+        help="Turn on only if your deployed app can reach an LLM API."
+    )
     st.session_state.preprocess_mode = st.toggle(
         "Preprocess topic before generating questions",
-        value=st.session_state.preprocess_mode,
+        value=st.session_state.preprocess_mode if st.session_state.llm_enabled else False,
         help="Cleans and summarizes topic text before question generation."
     )
+    if not st.session_state.llm_enabled:
+        st.session_state.preprocess_mode = False
 
     st.markdown('<div class="ibc-section">Select Technical Topic</div>', unsafe_allow_html=True)
 
@@ -933,31 +950,41 @@ with col_left:
         if st.button("Start Exam"):
             snippet = extract_topic_snippet(pdf_path, selected_topic)
             snippet_for_exam = snippet
-            try:
-                if st.session_state.preprocess_mode:
-                    try:
-                        with st.spinner("Preprocessing topic content..."):
-                            snippet_for_exam, _ = preprocess_snippet_with_ollama(
-                                snippet=snippet,
-                                topic=selected_topic
-                            )
-                    except Exception as preprocess_error:
-                        st.session_state.last_llm_error = f"Preprocess mode fallback: {preprocess_error}"
-                        snippet_for_exam = snippet
-                st.session_state.processed_snippet = snippet_for_exam
+            if st.session_state.llm_enabled:
+                try:
+                    if st.session_state.preprocess_mode:
+                        try:
+                            with st.spinner("Preprocessing topic content..."):
+                                snippet_for_exam, _ = preprocess_snippet_with_ollama(
+                                    snippet=snippet,
+                                    topic=selected_topic
+                                )
+                        except Exception as preprocess_error:
+                            st.session_state.last_llm_error = f"Preprocess mode fallback: {preprocess_error}"
+                            snippet_for_exam = snippet
+                    st.session_state.processed_snippet = snippet_for_exam
 
-                with st.spinner("Generating questions with local LLM..."):
-                    questions, prompt = generate_questions_with_ollama(
-                        snippet=snippet_for_exam,
-                        topic=selected_topic
-                    )
-                st.session_state.questions = questions
-                st.session_state.last_prompt = prompt
+                    with st.spinner("Generating questions with LLM..."):
+                        questions, prompt = generate_questions_with_ollama(
+                            snippet=snippet_for_exam,
+                            topic=selected_topic
+                        )
+                    st.session_state.questions = questions
+                    st.session_state.last_prompt = prompt
+                    st.session_state.last_llm_error = ""
+                except Exception as e:
+                    st.session_state.last_llm_error = str(e)
+                    st.error(f"LLM error: {e}")
+                    st.stop()
+            else:
+                st.session_state.processed_snippet = snippet_for_exam
+                st.session_state.questions = _build_fallback_questions(
+                    snippet=snippet_for_exam,
+                    topic=selected_topic,
+                    needed=TOTAL_QUESTIONS
+                )
+                st.session_state.last_prompt = "Local generation mode (LLM disabled)."
                 st.session_state.last_llm_error = ""
-            except Exception as e:
-                st.session_state.last_llm_error = str(e)
-                st.error(f"LLM error: {e}")
-                st.stop()
 
             st.session_state.exam_started = True
             st.session_state.exam_finished = False
@@ -1033,24 +1060,27 @@ with col_left:
                 if st.session_state.questions:
                     rationale_key = f"{selected_topic}:{q_index}"
                     if rationale_key not in st.session_state.rationales:
-                        try:
-                            snippet = st.session_state.processed_snippet or extract_topic_snippet(pdf_path, selected_topic)
-                            with st.spinner("Getting rationale for incorrect answer..."):
-                                rationale, prompt = generate_rationale_with_ollama(
-                                    snippet=snippet,
-                                    topic=selected_topic,
-                                    question=current_q["question"],
-                                    options=current_q["options"],
-                                    answer=current_q["answer"]
+                        if st.session_state.llm_enabled:
+                            try:
+                                snippet = st.session_state.processed_snippet or extract_topic_snippet(pdf_path, selected_topic)
+                                with st.spinner("Getting rationale for incorrect answer..."):
+                                    rationale, prompt = generate_rationale_with_ollama(
+                                        snippet=snippet,
+                                        topic=selected_topic,
+                                        question=current_q["question"],
+                                        options=current_q["options"],
+                                        answer=current_q["answer"]
+                                    )
+                                st.session_state.rationales[rationale_key] = rationale
+                                st.session_state.last_prompt = prompt
+                                st.session_state.last_llm_error = ""
+                            except Exception as e:
+                                st.session_state.last_llm_error = str(e)
+                                st.session_state.rationales[rationale_key] = (
+                                    "Could not generate rationale at this moment."
                                 )
-                            st.session_state.rationales[rationale_key] = rationale
-                            st.session_state.last_prompt = prompt
-                            st.session_state.last_llm_error = ""
-                        except Exception as e:
-                            st.session_state.last_llm_error = str(e)
-                            st.session_state.rationales[rationale_key] = (
-                                "Could not generate rationale at this moment."
-                            )
+                        else:
+                            st.session_state.rationales[rationale_key] = _build_local_rationale(correct_answer)
 
                 rationale_key = f"{selected_topic}:{q_index}"
                 if rationale_key in st.session_state.rationales:
