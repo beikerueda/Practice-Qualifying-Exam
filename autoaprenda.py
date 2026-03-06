@@ -43,9 +43,11 @@ if "last_topic" not in st.session_state:
 if "score" not in st.session_state:
     st.session_state.score = 0
 
-TOTAL_QUESTIONS = 12
+TOTAL_QUESTIONS = 8
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2:1b"
+OLLAMA_NUM_PREDICT = 700
+OLLAMA_TEMPERATURE = 0.2
 
 if "questions" not in st.session_state:
     st.session_state.questions = []
@@ -73,6 +75,12 @@ if "candidate_name" not in st.session_state:
 
 if "answer_history" not in st.session_state:
     st.session_state.answer_history = {}
+
+if "preprocess_mode" not in st.session_state:
+    st.session_state.preprocess_mode = True
+
+if "processed_snippet" not in st.session_state:
+    st.session_state.processed_snippet = ""
 
 # =====================================================
 # CACHED PDF HELPERS
@@ -145,7 +153,7 @@ def extract_titles_from_pdf(path):
 # =====================================================
 # EXTRACT TOPIC SNIPPET
 # =====================================================
-def extract_topic_snippet(path, topic, max_chars=4000):
+def extract_topic_snippet(path, topic, max_chars=1500):
     full_text = read_pdf_full_text(path)
 
     lines = [line.strip() for line in full_text.split("\n") if line.strip()]
@@ -176,6 +184,31 @@ def extract_topic_snippet(path, topic, max_chars=4000):
         return full_text[:max_chars]
 
     return snippet[:max_chars]
+
+def clean_snippet_text(snippet, max_chars=3500):
+    lines = [re.sub(r"\s+", " ", line).strip() for line in snippet.splitlines()]
+    lines = [line for line in lines if line]
+    cleaned = "\n".join(lines)
+    return cleaned[:max_chars]
+
+def build_preprocess_prompt(snippet, topic):
+    return (
+        "You are a technical content preprocessor for certification exams.\n"
+        "Clean the source text, remove noise, and extract high-value key points.\n"
+        "Return ONLY valid JSON in this schema:\n"
+        "{\n"
+        '  "clean_text": "string",\n'
+        '  "key_points": ["string", "string"],\n'
+        '  "summary": "string"\n'
+        "}\n"
+        "Rules:\n"
+        "- Keep content faithful to the original text.\n"
+        "- No invented facts.\n"
+        "- Keep output concise and technical.\n"
+        f"Topic: {topic}\n"
+        "Source text:\n"
+        f"{snippet}\n"
+    )
 
 # =====================================================
 # LLM (OLLAMA) QUESTION GENERATION
@@ -248,10 +281,97 @@ def _extract_json(text):
 
     return None
 
+def _extract_json_array(text):
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        try:
+            parsed = json.loads(fenced.group(1))
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    match = re.search(r"\[.*\]", text, re.DOTALL)
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
 def _safe_text(value):
     if value is None:
         return ""
     return str(value).strip()
+
+def _extract_questions_payload(raw_text):
+    parsed = _extract_json(raw_text)
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("questions"), list):
+            return parsed["questions"]
+        if isinstance(parsed.get("items"), list):
+            return parsed["items"]
+
+    arr = _extract_json_array(raw_text)
+    if isinstance(arr, list):
+        return arr
+
+    return None
+
+def preprocess_snippet_with_ollama(snippet, topic):
+    prompt = build_preprocess_prompt(snippet, topic)
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "format": "json",
+        "options": {
+            "num_predict": OLLAMA_NUM_PREDICT,
+            "temperature": OLLAMA_TEMPERATURE
+        },
+        "stream": False
+    }
+
+    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+    raw_text = data.get("response", "")
+    parsed = _extract_json(raw_text)
+
+    if isinstance(parsed, dict):
+        clean_text = clean_snippet_text(_safe_text(parsed.get("clean_text", "")))
+        key_points = parsed.get("key_points", [])
+        if not isinstance(key_points, list):
+            key_points = []
+        key_points = [_safe_text(item) for item in key_points if _safe_text(item)]
+        summary = _safe_text(parsed.get("summary", ""))
+
+        sections = []
+        if clean_text:
+            sections.append(clean_text)
+        if key_points:
+            sections.append("Key points:\n- " + "\n- ".join(key_points[:8]))
+        if summary:
+            sections.append("Summary:\n" + summary)
+
+        processed = "\n\n".join(sections).strip()
+        if processed:
+            return processed[:3800], prompt
+
+    fallback = clean_snippet_text(snippet)
+    if fallback:
+        return fallback, prompt
+
+    raise ValueError("Preprocess mode failed to produce usable content.")
 
 def generate_questions_with_ollama(snippet, topic):
     prompt = build_question_prompt(snippet, topic)
@@ -260,6 +380,10 @@ def generate_questions_with_ollama(snippet, topic):
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "format": "json",
+        "options": {
+            "num_predict": OLLAMA_NUM_PREDICT,
+            "temperature": OLLAMA_TEMPERATURE
+        },
         "stream": False
     }
 
@@ -269,13 +393,36 @@ def generate_questions_with_ollama(snippet, topic):
     data = response.json()
     raw_text = data.get("response", "")
 
-    parsed = _extract_json(raw_text)
-    if not parsed or "questions" not in parsed:
+    questions = _extract_questions_payload(raw_text)
+    if questions is None:
+        repair_prompt = (
+            "Convert the following content into valid JSON with this schema only:\n"
+            "{ \"questions\": [ { \"question\": \"string\", \"options\": { \"A\": \"string\", \"B\": \"string\", \"C\": \"string\", \"D\": \"string\" }, \"answer\": \"A|B|C|D\" } ] }\n"
+            f"Need exactly {TOTAL_QUESTIONS} questions.\n"
+            "Content:\n"
+            f"{raw_text}\n"
+        )
+        repair_payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": repair_prompt,
+            "format": "json",
+            "options": {
+                "num_predict": OLLAMA_NUM_PREDICT,
+                "temperature": 0.1
+            },
+            "stream": False
+        }
+        repair_response = requests.post(OLLAMA_URL, json=repair_payload, timeout=120)
+        repair_response.raise_for_status()
+        repair_data = repair_response.json()
+        repaired_raw = repair_data.get("response", "")
+        questions = _extract_questions_payload(repaired_raw)
+
+    if questions is None:
         raise ValueError("LLM did not return valid JSON with 'questions'.")
 
-    questions = parsed["questions"]
     if not isinstance(questions, list) or len(questions) < TOTAL_QUESTIONS:
-        raise ValueError("LLM returned fewer than 12 questions.")
+        raise ValueError(f"LLM returned fewer than {TOTAL_QUESTIONS} questions.")
 
     normalized = []
     for q in questions[:TOTAL_QUESTIONS]:
@@ -310,6 +457,10 @@ def generate_rationale_with_ollama(snippet, topic, question, options, answer):
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "format": "json",
+        "options": {
+            "num_predict": OLLAMA_NUM_PREDICT,
+            "temperature": OLLAMA_TEMPERATURE
+        },
         "stream": False
     }
 
@@ -612,6 +763,11 @@ with col_left:
         "Candidate Name",
         value=st.session_state.candidate_name
     )
+    st.session_state.preprocess_mode = st.toggle(
+        "Preprocess topic before generating questions",
+        value=st.session_state.preprocess_mode,
+        help="Cleans and summarizes topic text before question generation."
+    )
 
     st.markdown('<div class="ibc-section">Select Technical Topic</div>', unsafe_allow_html=True)
 
@@ -634,6 +790,7 @@ with col_left:
         st.session_state.awaiting_next = False
         st.session_state.current_rationale = ""
         st.session_state.answer_history = {}
+        st.session_state.processed_snippet = ""
         st.session_state.last_topic = selected_topic
         st.session_state.last_pdf = pdf_path
 
@@ -645,10 +802,23 @@ with col_left:
     if not st.session_state.exam_started:
         if st.button("Start Exam"):
             snippet = extract_topic_snippet(pdf_path, selected_topic)
+            snippet_for_exam = snippet
             try:
+                if st.session_state.preprocess_mode:
+                    try:
+                        with st.spinner("Preprocessing topic content..."):
+                            snippet_for_exam, _ = preprocess_snippet_with_ollama(
+                                snippet=snippet,
+                                topic=selected_topic
+                            )
+                    except Exception as preprocess_error:
+                        st.session_state.last_llm_error = f"Preprocess mode fallback: {preprocess_error}"
+                        snippet_for_exam = snippet
+                st.session_state.processed_snippet = snippet_for_exam
+
                 with st.spinner("Generating questions with local LLM..."):
                     questions, prompt = generate_questions_with_ollama(
-                        snippet=snippet,
+                        snippet=snippet_for_exam,
                         topic=selected_topic
                     )
                 st.session_state.questions = questions
@@ -734,7 +904,7 @@ with col_left:
                     rationale_key = f"{selected_topic}:{q_index}"
                     if rationale_key not in st.session_state.rationales:
                         try:
-                            snippet = extract_topic_snippet(pdf_path, selected_topic)
+                            snippet = st.session_state.processed_snippet or extract_topic_snippet(pdf_path, selected_topic)
                             with st.spinner("Getting rationale for incorrect answer..."):
                                 rationale, prompt = generate_rationale_with_ollama(
                                     snippet=snippet,
@@ -786,6 +956,10 @@ with col_left:
     if st.session_state.last_prompt:
         with st.expander("Show LLM Prompt"):
             st.code(st.session_state.last_prompt, language="text")
+
+    if st.session_state.preprocess_mode and st.session_state.processed_snippet:
+        with st.expander("Show Processed Topic Content"):
+            st.text(st.session_state.processed_snippet)
 
     if st.session_state.last_llm_error:
         st.warning(st.session_state.last_llm_error)
@@ -845,12 +1019,24 @@ if st.session_state.exam_finished:
         unsafe_allow_html=True
     )
 
-    domain_ranges = [
-        ("Domain 1 - Fundamentals", 1, 3),
-        ("Domain 2 - Procedures", 4, 6),
-        ("Domain 3 - Interpretation", 7, 9),
-        ("Domain 4 - Applied Practice", 10, 12),
+    domain_labels = [
+        "Domain 1 - Fundamentals",
+        "Domain 2 - Procedures",
+        "Domain 3 - Interpretation",
+        "Domain 4 - Applied Practice",
     ]
+    chunk = max(1, TOTAL_QUESTIONS // len(domain_labels))
+    domain_ranges = []
+    start = 1
+    for idx, label in enumerate(domain_labels):
+        if start > TOTAL_QUESTIONS:
+            break
+        end = start + chunk - 1
+        if idx == len(domain_labels) - 1:
+            end = TOTAL_QUESTIONS
+        end = min(end, TOTAL_QUESTIONS)
+        domain_ranges.append((label, start, end))
+        start = end + 1
 
     bars_html = []
     for label, start_q, end_q in domain_ranges:
