@@ -10,6 +10,10 @@ import requests
 from datetime import datetime
 import time
 import random
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 
 st.set_page_config(layout="wide")
 
@@ -53,6 +57,7 @@ OLLAMA_TEMPERATURE = 0.2
 OLLAMA_CONNECT_TIMEOUT = 10
 OLLAMA_RETRIES = 2
 OLLAMA_BACKOFF_SECONDS = 2
+OPENAI_MODEL_DEFAULT = "gpt-4o-mini"
 
 if "questions" not in st.session_state:
     st.session_state.questions = []
@@ -88,7 +93,7 @@ if "processed_snippet" not in st.session_state:
     st.session_state.processed_snippet = ""
 
 if "llm_enabled" not in st.session_state:
-    st.session_state.llm_enabled = False
+    st.session_state.llm_enabled = bool(st.secrets.get("OPENAI_API_KEY", ""))
 
 # =====================================================
 # CACHED PDF HELPERS
@@ -428,7 +433,41 @@ def _build_local_rationale(correct_answer):
         f"Expected correct option: {correct_answer}"
     )
 
+def _has_openai_key():
+    return bool(st.secrets.get("OPENAI_API_KEY", "")) and OpenAI is not None
+
 def _call_ollama(payload, read_timeout, retries=OLLAMA_RETRIES):
+    if _has_openai_key():
+        model = st.secrets.get("OPENAI_MODEL", OPENAI_MODEL_DEFAULT)
+        api_key = st.secrets.get("OPENAI_API_KEY", "")
+        options = payload.get("options", {})
+        temperature = options.get("temperature", OLLAMA_TEMPERATURE)
+        num_predict = options.get("num_predict", OLLAMA_NUM_PREDICT)
+        prompt = payload.get("prompt", "")
+
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                client = OpenAI(api_key=api_key)
+                response = client.responses.create(
+                    model=model,
+                    input=prompt,
+                    temperature=temperature,
+                    max_output_tokens=num_predict
+                )
+                return {"response": response.output_text}
+            except Exception as exc:
+                last_error = exc
+                if attempt < retries:
+                    time.sleep(OLLAMA_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                break
+
+        raise RuntimeError(
+            f"OpenAI request failed after {retries + 1} attempts. "
+            f"Last error: {last_error}"
+        )
+
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -904,9 +943,9 @@ with col_left:
         value=st.session_state.candidate_name
     )
     st.session_state.llm_enabled = st.toggle(
-        "Use LLM generation (requires configured endpoint)",
+        "Use LLM generation (OpenAI key or configured endpoint)",
         value=st.session_state.llm_enabled,
-        help="Turn on only if your deployed app can reach an LLM API."
+        help="Uses OpenAI when OPENAI_API_KEY is set; otherwise uses configured endpoint."
     )
     st.session_state.preprocess_mode = st.toggle(
         "Preprocess topic before generating questions",
